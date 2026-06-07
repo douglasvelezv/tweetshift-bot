@@ -31,6 +31,7 @@ class TweetShiftBot(commands.Bot):
             "cogs.setup",
             "cogs.feeds",
             "cogs.help",
+            "cogs.twitter_monitor",
         ]
         for cog in cogs:
             try:
