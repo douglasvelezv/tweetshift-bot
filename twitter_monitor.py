@@ -8,7 +8,7 @@ import asyncio
 from datetime import datetime, timezone
 import tweepy
 import discord
-from discord.ext import tasks
+from discord.ext import tasks, commands
 from database import db
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def get_twitter_client():
     )
 
 
-class TwitterMonitor:
+class TwitterMonitor(commands.Cog):
     """Monitor de feeds de Twitter/X."""
 
     def __init__(self, bot: discord.Client):
@@ -159,3 +159,7 @@ class TwitterMonitor:
 
         except Exception as e:
             logger.error(f"Error en check_feeds: {e}")
+
+async def setup(bot: commands.Bot):
+        await bot.add_cog(TwitterMonitor(bot))
+    
