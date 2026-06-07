@@ -4,7 +4,6 @@ TweetShift Bot
 """
 import os
 import logging
-import asyncio
 from datetime import datetime, timezone
 import tweepy
 import discord
@@ -21,10 +20,6 @@ def get_twitter_client():
         raise ValueError("TWITTER_BEARER_TOKEN no configurado")
     return tweepy.Client(
         bearer_token=bearer_token,
-        consumer_key=os.getenv("TWITTER_API_KEY"),
-        consumer_secret=os.getenv("TWITTER_API_SECRET"),
-        access_token=os.getenv("TWITTER_ACCESS_TOKEN"),
-        access_token_secret=os.getenv("TWITTER_ACCESS_TOKEN_SECRET"),
         wait_on_rate_limit=True
     )
 
@@ -46,37 +41,25 @@ class TwitterMonitor(commands.Cog):
         except Exception as e:
             logger.error(f"Error iniciando Twitter client: {e}")
 
-    async def get_user_id(self, handle: str) -> str:
-        """Obtiene el ID de usuario de Twitter por handle."""
+    async def get_latest_tweets(self, handle: str, since_id: str = None) -> list:
+        """Obtiene los tweets mas recientes usando search_recent_tweets."""
         try:
-            user = self.twitter_client.get_user(username=handle)
-            if user.data:
-                return str(user.data.id)
-        except Exception as e:
-            logger.error(f"Error obteniendo user_id para @{handle}: {e}")
-        return None
-
-    async def get_latest_tweets(self, twitter_user_id: str, since_id: str = None) -> list:
-        """Obtiene los tweets mas recientes de un usuario."""
-        try:
+            query = f"from:{handle} -is:retweet -is:reply"
             params = {
-                "id": twitter_user_id,
-                "max_results": 5,
+                "query": query,
+                "max_results": 10,
                 "tweet_fields": ["created_at", "text", "author_id", "public_metrics"],
-                "expansions": ["author_id", "attachments.media_keys"],
-                "media_fields": ["url", "preview_image_url", "type"],
-                "exclude": ["retweets", "replies"]
             }
             if since_id:
                 params["since_id"] = since_id
 
-            response = self.twitter_client.get_users_tweets(**params)
+            response = self.twitter_client.search_recent_tweets(**params)
             if response.data:
                 return response.data
         except tweepy.errors.TooManyRequests:
             logger.warning("Rate limit alcanzado en Twitter API")
         except Exception as e:
-            logger.error(f"Error obteniendo tweets: {e}")
+            logger.error(f"Error obteniendo tweets para @{handle}: {e}")
         return []
 
     async def build_tweet_embed(self, tweet, handle: str) -> discord.Embed:
@@ -94,15 +77,13 @@ class TwitterMonitor(commands.Cog):
             url=f"https://twitter.com/{handle}",
             icon_url="https://abs.twimg.com/icons/apple-touch-icon-192x192.png"
         )
-        embed.set_footer(text="Twitter/X • TweetShift Bot")
+        embed.set_footer(text="Twitter/X | TweetShift Bot")
 
         if hasattr(tweet, "public_metrics") and tweet.public_metrics:
             metrics = tweet.public_metrics
-            embed.add_field(
-                name="Stats",
-                value=f"Likes: {metrics.get(chr(108)+chr(105)+chr(107)+chr(101)+chr(95)+chr(99)+chr(111)+chr(117)+chr(110)+chr(116), 0)} | RT: {metrics.get(chr(114)+chr(101)+chr(116)+chr(119)+chr(101)+chr(101)+chr(116)+chr(95)+chr(99)+chr(111)+chr(117)+chr(110)+chr(116), 0)}",
-                inline=True
-            )
+            likes = metrics.get("like_count", 0)
+            rts = metrics.get("retweet_count", 0)
+            embed.add_field(name="Stats", value=f"Likes: {likes} | RT: {rts}", inline=True)
 
         return embed
 
@@ -119,49 +100,46 @@ class TwitterMonitor(commands.Cog):
                 return
 
             for feed in feeds:
-                try:
-                    handle = feed["twitter_handle"]
-                    guild_id = feed["guild_id"]
-                    channel_id = feed["channel_id"]
-                    last_tweet_id = feed.get("last_tweet_id")
+                handle = feed.get("twitter_handle")
+                channel_id = feed.get("channel_id")
+                last_tweet_id = feed.get("last_tweet_id")
 
-                    # Obtener user_id si no lo tenemos
-                    twitter_user_id = feed.get("twitter_user_id")
-                    if not twitter_user_id:
-                        twitter_user_id = await self.get_user_id(handle)
-                        if not twitter_user_id:
-                            continue
-
-                    # Obtener tweets nuevos
-                    tweets = await self.get_latest_tweets(twitter_user_id, last_tweet_id)
-
-                    if not tweets:
-                        continue
-
-                    # Obtener canal de Discord
-                    channel = self.bot.get_channel(int(channel_id))
-                    if not channel:
-                        logger.warning(f"Canal no encontrado: {channel_id}")
-                        continue
-
-                    # Publicar tweets en orden cronologico
-                    for tweet in reversed(tweets):
-                        embed = await self.build_tweet_embed(tweet, handle)
-                        await channel.send(embed=embed)
-                        await asyncio.sleep(1)
-
-                    # Actualizar last_tweet_id
-                    db.update_last_tweet(feed["id"], str(tweets[0].id))
-
-                except Exception as e:
-                    logger.error(f"Error procesando feed @{feed.get(chr(116)+chr(119)+chr(105)+chr(116)+chr(116)+chr(101)+chr(114)+chr(95)+chr(104)+chr(97)+chr(110)+chr(100)+chr(108)+chr(101), chr(63))}: {e}")
+                if not handle or not channel_id:
                     continue
 
-                await asyncio.sleep(2)
+                channel = self.bot.get_channel(int(channel_id))
+                if not channel:
+                    logger.warning(f"Canal {channel_id} no encontrado")
+                    continue
+
+                tweets = await self.get_latest_tweets(handle, since_id=last_tweet_id)
+                if not tweets:
+                    continue
+
+                tweets_sorted = sorted(tweets, key=lambda t: t.id)
+                new_last_id = None
+
+                for tweet in tweets_sorted:
+                    try:
+                        embed = await self.build_tweet_embed(tweet, handle)
+                        await channel.send(embed=embed)
+                        new_last_id = str(tweet.id)
+                        logger.info(f"Tweet publicado: @{handle} tweet {tweet.id}")
+                    except Exception as e:
+                        logger.error(f"Error enviando tweet al canal: {e}")
+
+                if new_last_id:
+                    db.update_last_tweet(handle, new_last_id)
 
         except Exception as e:
             logger.error(f"Error en check_feeds: {e}")
 
+    @check_feeds.before_loop
+    async def before_check_feeds(self):
+        """Espera a que el bot este listo antes de iniciar el loop."""
+        await self.bot.wait_until_ready()
+        logger.info("TwitterMonitor iniciado y esperando tweets...")
+
+
 async def setup(bot: commands.Bot):
-        await bot.add_cog(TwitterMonitor(bot))
-    
+    await bot.add_cog(TwitterMonitor(bot))
