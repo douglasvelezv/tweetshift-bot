@@ -36,6 +36,7 @@ class TwitterMonitor(commands.Cog):
         self.bot = bot
         self.twitter_client = None
         self._setup_client()
+        self.check_feeds.start()
 
     def _setup_client(self):
         """Inicializa el cliente de Twitter."""
@@ -105,6 +106,7 @@ class TwitterMonitor(commands.Cog):
 
         return embed
 
+    @tasks.loop(seconds=60)
     async def check_feeds(self):
         """Verifica todos los feeds activos y publica nuevos tweets."""
         if not self.twitter_client:
